@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -444,5 +445,254 @@ bm_status_t bm_dump_hex(const bm_mem_t *mem, const char *path) {
         }
     }
     fclose(f);
+    return BM_OK;
+}
+
+// ── Byte / Blob View ────────────────────────────────────────────────
+// the substrate is just bytes; expose them so the same .mem can carry
+// executables and other payloads next to the bit planes.
+
+uint8_t *bm_bytes(bm_mem_t *mem) {
+    return (uint8_t *)mem->base;
+}
+
+size_t bm_size_bytes(const bm_mem_t *mem) {
+    return mem->n_pages * BM_PAGE_SIZE;
+}
+
+bm_status_t bm_blob_write(bm_mem_t *mem, uint64_t byte_off,
+                          const void *data, size_t len) {
+    if (!mem->writable) return BM_ERR_OOB;
+    if (byte_off + len > bm_size_bytes(mem)) return BM_ERR_OOB;
+    memcpy((uint8_t *)mem->base + byte_off, data, len);
+    return BM_OK;
+}
+
+bm_status_t bm_blob_read(const bm_mem_t *mem, uint64_t byte_off,
+                         void *dst, size_t len) {
+    if (byte_off + len > bm_size_bytes(mem)) return BM_ERR_OOB;
+    memcpy(dst, (const uint8_t *)mem->base + byte_off, len);
+    return BM_OK;
+}
+
+bm_status_t bm_blob_load(bm_mem_t *mem, uint64_t byte_off,
+                         const char *path, size_t *out_len) {
+    if (!mem->writable) return BM_ERR_OOB;
+    FILE *f = fopen(path, "rb");
+    if (!f) return BM_ERR_MMAP;
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return BM_ERR_MMAP; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return BM_ERR_MMAP; }
+    rewind(f);
+
+    if (byte_off + (size_t)sz > bm_size_bytes(mem)) { fclose(f); return BM_ERR_OOB; }
+    size_t got = fread((uint8_t *)mem->base + byte_off, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) return BM_ERR_MMAP;
+
+    if (out_len) *out_len = got;
+    return BM_OK;
+}
+
+bm_status_t bm_blob_save(const bm_mem_t *mem, uint64_t byte_off,
+                         size_t len, const char *path) {
+    if (byte_off + len > bm_size_bytes(mem)) return BM_ERR_OOB;
+    FILE *f = fopen(path, "wb");
+    if (!f) return BM_ERR_MMAP;
+    size_t put = fwrite((const uint8_t *)mem->base + byte_off, 1, len, f);
+    fclose(f);
+    return put == len ? BM_OK : BM_ERR_MMAP;
+}
+
+// ── Binary Vector Lanes ─────────────────────────────────────────────
+// popcount-based similarity over {0,1} regions of the substrate.
+
+static inline size_t bvec_words(uint64_t dim) {
+    return (size_t)((dim + BM_WORD_BITS - 1) / BM_WORD_BITS);
+}
+
+static inline uint64_t bvec_tail_mask(uint64_t dim) {
+    uint64_t r = dim & (BM_WORD_BITS - 1);
+    return r ? ((1ULL << r) - 1) : ~0ULL;
+}
+
+// 64-bit window at (bit_off + 64*i), zero-filled past the substrate.
+static uint64_t bvec_word(const bm_mem_t *mem, uint64_t bit_off, size_t i) {
+    uint64_t pos = bit_off + (uint64_t)i * BM_WORD_BITS;
+    if (pos >= mem->total_bits) return 0;
+    size_t nw = mem->n_pages * BM_WORDS_PER_PAGE;
+    uint64_t w = pos / BM_WORD_BITS, sh = pos % BM_WORD_BITS;
+    uint64_t out = mem->base[w] >> sh;
+    if (sh && (w + 1) < nw) out |= mem->base[w + 1] << (BM_WORD_BITS - sh);
+    return out;
+}
+
+#ifdef __AVX2__
+static uint64_t and_popcount_avx2(const uint64_t *a, const uint64_t *b, size_t nwords) {
+    const __m256i lookup = _mm256_setr_epi8(
+        0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,
+        0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4);
+    const __m256i mask4 = _mm256_set1_epi8(0x0F);
+    __m256i acc = _mm256_setzero_si256();
+
+    size_t blocks = nwords / 4;
+    const __m256i *va = (const __m256i *)a;
+    const __m256i *vb = (const __m256i *)b;
+    for (size_t i = 0; i < blocks; i++) {
+        __m256i v  = _mm256_and_si256(_mm256_loadu_si256(&va[i]),
+                                      _mm256_loadu_si256(&vb[i]));
+        __m256i lo = _mm256_and_si256(v, mask4);
+        __m256i hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), mask4);
+        __m256i pc = _mm256_add_epi8(_mm256_shuffle_epi8(lookup, lo),
+                                     _mm256_shuffle_epi8(lookup, hi));
+        acc = _mm256_add_epi64(acc, _mm256_sad_epu8(pc, _mm256_setzero_si256()));
+    }
+    uint64_t tmp[4];
+    _mm256_storeu_si256((__m256i *)tmp, acc);
+    uint64_t c = tmp[0] + tmp[1] + tmp[2] + tmp[3];
+    for (size_t i = blocks * 4; i < nwords; i++) c += POPCNT64(a[i] & b[i]);
+    return c;
+}
+#endif
+
+uint64_t bm_bvec_popcount(const bm_mem_t *mem, const bm_bvec_t *v) {
+    size_t nw = bvec_words(v->dim);
+    if (!nw) return 0;
+    uint64_t c = 0;
+    for (size_t i = 0; i + 1 < nw; i++)
+        c += POPCNT64(bvec_word(mem, v->bit_off, i));
+    c += POPCNT64(bvec_word(mem, v->bit_off, nw - 1) & bvec_tail_mask(v->dim));
+    return c;
+}
+
+uint64_t bm_bvec_dot(const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b) {
+    uint64_t dim = a->dim < b->dim ? a->dim : b->dim;
+    if (!dim) return 0;
+
+#ifdef __AVX2__
+    if ((a->bit_off % BM_WORD_BITS) == 0 && (b->bit_off % BM_WORD_BITS) == 0 &&
+        a->bit_off + dim <= mem->total_bits &&
+        b->bit_off + dim <= mem->total_bits) {
+        const uint64_t *pa = mem->base + a->bit_off / BM_WORD_BITS;
+        const uint64_t *pb = mem->base + b->bit_off / BM_WORD_BITS;
+        size_t full = (size_t)(dim / BM_WORD_BITS);
+        uint64_t c = and_popcount_avx2(pa, pb, full);
+        uint64_t r = dim & (BM_WORD_BITS - 1);
+        if (r) c += POPCNT64(pa[full] & pb[full] & ((1ULL << r) - 1));
+        return c;
+    }
+#endif
+
+    size_t nw = bvec_words(dim);
+    uint64_t c = 0;
+    for (size_t i = 0; i + 1 < nw; i++)
+        c += POPCNT64(bvec_word(mem, a->bit_off, i) & bvec_word(mem, b->bit_off, i));
+    c += POPCNT64(bvec_word(mem, a->bit_off, nw - 1) &
+                  bvec_word(mem, b->bit_off, nw - 1) & bvec_tail_mask(dim));
+    return c;
+}
+
+uint64_t bm_bvec_hamming(const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b) {
+    uint64_t pa = bm_bvec_popcount(mem, a);
+    uint64_t pb = bm_bvec_popcount(mem, b);
+    uint64_t d  = bm_bvec_dot(mem, a, b);
+    return pa + pb - 2 * d;
+}
+
+double bm_bvec_cosine(const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b) {
+    uint64_t pa = bm_bvec_popcount(mem, a);
+    uint64_t pb = bm_bvec_popcount(mem, b);
+    if (!pa || !pb) return 0.0;
+    uint64_t d = bm_bvec_dot(mem, a, b);
+    return (double)d / sqrt((double)pa * (double)pb);
+}
+
+double bm_bvec_jaccard(const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b) {
+    uint64_t d  = bm_bvec_dot(mem, a, b);
+    uint64_t pa = bm_bvec_popcount(mem, a);
+    uint64_t pb = bm_bvec_popcount(mem, b);
+    uint64_t u  = pa + pb - d;
+    return u ? (double)d / (double)u : 0.0;
+}
+
+// ── Multipurpose Segment Directory ──────────────────────────────────
+// page 0 = { header, segment table }; segments start at page 1.
+
+#define BM_DIR_MAGIC 0x31564D42u  // 'BMV1'
+
+typedef struct {
+    uint32_t magic;
+    uint32_t count;
+    uint64_t bump;    // next free byte offset for a new segment
+} bm_dir_hdr_t;
+
+#define BM_DIR_MAX ((BM_PAGE_SIZE - sizeof(bm_dir_hdr_t)) / sizeof(bm_seg_t))
+
+static bm_dir_hdr_t *dir_hdr(const bm_mem_t *mem) {
+    if (mem->n_pages < 1 || !mem->base) return NULL;
+    bm_dir_hdr_t *h = (bm_dir_hdr_t *)mem->base;
+    return h->magic == BM_DIR_MAGIC ? h : NULL;
+}
+
+static bm_seg_t *dir_segs(const bm_mem_t *mem) {
+    return (bm_seg_t *)((uint8_t *)mem->base + sizeof(bm_dir_hdr_t));
+}
+
+bm_status_t bm_dir_init(bm_mem_t *mem) {
+    if (!mem->writable || mem->n_pages < 1) return BM_ERR_OOB;
+    bm_dir_hdr_t *h = (bm_dir_hdr_t *)mem->base;
+    h->magic = BM_DIR_MAGIC;
+    h->count = 0;
+    h->bump  = BM_PAGE_SIZE;   // segments live past the directory page
+    return BM_OK;
+}
+
+size_t bm_dir_count(const bm_mem_t *mem) {
+    bm_dir_hdr_t *h = dir_hdr(mem);
+    return h ? h->count : 0;
+}
+
+const bm_seg_t *bm_dir_get(const bm_mem_t *mem, size_t i) {
+    bm_dir_hdr_t *h = dir_hdr(mem);
+    if (!h || i >= h->count) return NULL;
+    return &dir_segs(mem)[i];
+}
+
+const bm_seg_t *bm_dir_find(const bm_mem_t *mem, const char *name) {
+    bm_dir_hdr_t *h = dir_hdr(mem);
+    if (!h || !name) return NULL;
+    bm_seg_t *segs = dir_segs(mem);
+    for (uint32_t i = 0; i < h->count; i++)
+        if (strncmp(segs[i].name, name, sizeof(segs[i].name)) == 0)
+            return &segs[i];
+    return NULL;
+}
+
+bm_status_t bm_seg_add(bm_mem_t *mem, const char *name, bm_seg_kind_t kind,
+                       uint32_t elem_bits, uint64_t byte_len, uint64_t *out_off) {
+    if (!mem->writable) return BM_ERR_OOB;
+    bm_dir_hdr_t *h = dir_hdr(mem);
+    if (!h) return BM_ERR_PATTERN;          // directory not initialized
+    if (h->count >= BM_DIR_MAX) return BM_ERR_FULL;
+
+    uint64_t off = (h->bump + BM_PAGE_SIZE - 1) & ~((uint64_t)BM_PAGE_SIZE - 1);
+    if (off + byte_len > bm_size_bytes(mem)) return BM_ERR_OOB;
+
+    bm_seg_t *s = &dir_segs(mem)[h->count];
+    memset(s, 0, sizeof(*s));
+    s->kind      = (uint32_t)kind;
+    s->elem_bits = elem_bits;
+    s->byte_off  = off;
+    s->byte_len  = byte_len;
+    if (name) {
+        size_t k = 0;
+        for (; k < sizeof(s->name) - 1 && name[k]; k++) s->name[k] = name[k];
+        s->name[k] = '\0';
+    }
+
+    h->bump = off + byte_len;
+    h->count++;
+    if (out_off) *out_off = off;
     return BM_OK;
 }

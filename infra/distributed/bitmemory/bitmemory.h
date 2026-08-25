@@ -107,6 +107,73 @@ void        bm_raster_free(bm_raster_t *r);
 // quantum level from density
 uint8_t bm_quantum_level(double density);
 
+// ── Byte / Blob View ────────────────────────────────────────────────
+// same substrate, byte-addressed: hold executables or arbitrary payloads
+// alongside the bit planes. Zero-copy over the mmap.
+
+uint8_t    *bm_bytes(bm_mem_t *mem);
+size_t      bm_size_bytes(const bm_mem_t *mem);
+
+bm_status_t bm_blob_write(bm_mem_t *mem, uint64_t byte_off,
+                          const void *data, size_t len);
+bm_status_t bm_blob_read(const bm_mem_t *mem, uint64_t byte_off,
+                         void *dst, size_t len);
+// slurp a whole file (e.g. an .exe) into the substrate at byte_off
+bm_status_t bm_blob_load(bm_mem_t *mem, uint64_t byte_off,
+                         const char *path, size_t *out_len);
+bm_status_t bm_blob_save(const bm_mem_t *mem, uint64_t byte_off,
+                         size_t len, const char *path);
+
+// ── Binary Vector Lanes ─────────────────────────────────────────────
+// a region of the substrate viewed as a {0,1} vector. Similarity is
+// popcount-based and SIMD-accelerated — the "vectorized cosine":
+//   dot(a,b) = popcount(a & b)
+//   |a|      = sqrt(popcount(a))
+//   cosine   = dot / sqrt(pa * pb)      (Otsuka-Ochiai)
+//   jaccard  = dot / (pa + pb - dot)    (Tanimoto)
+//   hamming  = pa + pb - 2*dot
+// Dense float/int8 vectors can live as BM_SEG_BLOB lanes; the native,
+// zero-decode similarity of this substrate is binary.
+
+typedef struct {
+    uint64_t bit_off;   // first bit of the vector in the substrate
+    uint64_t dim;       // length in bits
+} bm_bvec_t;
+
+uint64_t bm_bvec_popcount(const bm_mem_t *mem, const bm_bvec_t *v);
+uint64_t bm_bvec_dot     (const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b);
+uint64_t bm_bvec_hamming (const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b);
+double   bm_bvec_cosine  (const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b);
+double   bm_bvec_jaccard (const bm_mem_t *mem, const bm_bvec_t *a, const bm_bvec_t *b);
+
+// ── Multipurpose Segment Directory ──────────────────────────────────
+// optional, self-describing container: one .mem holds bitmaps, vectors
+// and blobs side by side. The directory occupies page 0; segments are
+// page-aligned and start at page 1, so raw bit ops stay valid.
+
+typedef enum {
+    BM_SEG_BITMAP = 1,   // occupancy / flag plane
+    BM_SEG_BVEC   = 2,   // binary vector lane (similarity)
+    BM_SEG_BLOB   = 3,   // raw bytes (executables, payloads)
+} bm_seg_kind_t;
+
+typedef struct {
+    uint32_t kind;       // bm_seg_kind_t
+    uint32_t elem_bits;  // bvec: dim; blob: 8; bitmap: 1
+    uint64_t byte_off;   // start offset in substrate
+    uint64_t byte_len;   // length in bytes
+    char     name[32];   // nul-terminated label
+} bm_seg_t;
+
+bm_status_t     bm_dir_init (bm_mem_t *mem);
+size_t          bm_dir_count(const bm_mem_t *mem);
+const bm_seg_t *bm_dir_get  (const bm_mem_t *mem, size_t i);
+const bm_seg_t *bm_dir_find (const bm_mem_t *mem, const char *name);
+
+// append a segment; its page-aligned byte offset is returned via *out_off
+bm_status_t bm_seg_add(bm_mem_t *mem, const char *name, bm_seg_kind_t kind,
+                       uint32_t elem_bits, uint64_t byte_len, uint64_t *out_off);
+
 // ── .mem Format I/O ─────────────────────────────────────────────────
 // hex pair format compatible with MIPS .mem loader:
 // 0xADDR\t0xVALUE per line
