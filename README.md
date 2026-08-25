@@ -12,4 +12,4 @@ your preferences.
 nit' it your way.
 ```
 
-<img width="1073" height="1099" alt="image" src="https://github.com/user-attachments/assets/8f1648f8-e5e0-48dd-98b7-6afb374f18f8" />
+<img width="617" height="553" alt="image" src="https://github.com/user-attachments/assets/70c76273-5417-4adb-ab54-7a108aaf56ea" />
