@@ -1,0 +1,105 @@
+# operator.qck — engine slots for .net integration
+# ** opens an engine; * keeps its signal; & closes and emits
+
+# ── 1. ef migration as signal ───────────────────────────────────────
+# granular 1-liner schema changes without touching c#
+
+**ef.migrate {
+  context :: DbContext endpoint
+  track   :: BitMemory field delta
+}
+
+do(**ef.migrate) {
+  *add_column("Orders", "Priority", int, default: 0)
+  *rename("Users.Name", "Users.DisplayName")
+  &apply
+} into(retVal)
+
+# retVal carries the migration diff; no c# file generated
+# &apply closes the phase — ef executes the migration plan
+
+# ── 2. dapper through endpoint ──────────────────────────────────────
+# raw sql, keep the signal live for chaining
+
+**dapper {
+  connection :: endpoint.qck('connectionString')
+  map        :: retVal | Struct
+}
+
+do(**dapper) {
+  *sql("SELECT Id, Status, Amount FROM Orders WHERE Status = @s", s: 1)
+  &map(Order)
+} into(Order[])
+
+# or keep it unstructured
+do(**dapper) {
+  &sql("SELECT * FROM audit_log WHERE ts > @t", t: boundary)
+} into(retVal)
+
+# ── 3. ef changeset — granular field writes ─────────────────────────
+# single-field updates tracked through BitMemory, no SaveChanges boilerplate
+
+**ef.change {
+  context :: DbContext endpoint
+  track   :: BitMemory @ field level
+}
+
+do(**ef.change) {
+  *set("Order", 1042, "Status", 2)
+  *set("Order", 1042, "Priority", 5)
+  *set("Order", 1043, "Status", 3)
+  &commit
+} into(retVal)
+
+# each *set is one bit flip in the change tracker
+# &commit flushes the accumulated changeset as one SaveChanges
+
+# ── 4. bulk through bitmap batch ────────────────────────────────────
+# large operations: ef bulk or dapper multi-exec, routed through BitMatrix
+
+**bulk {
+  engine  :: **dapper | **ef.change
+  batch   :: BitMatrix
+}
+
+do(**bulk) {
+  *ingest("staging_orders.csv", Order)
+  *filter(Status == 0)
+  *set("Status", 1)
+  &flush(batch_size: 5000)
+} into(BitMatrix)
+
+# BitMatrix holds the row/col mask of what changed
+# &flush drains it through whichever engine ** opened
+
+# ── 5. ef query → chain → bitmap replay ────────────────────────────
+# event-source an ef query: scope, cut, replay, rebuild, infer
+
+**ef.source {
+  context :: DbContext endpoint
+  stream  :: chain signal
+}
+
+do(**ef.source) {
+  context(*user_id)
+  time(*last_tuesday)
+  &replay
+} into(BitMemory @ boundary)
+
+# rebuilds the user's state at that boundary
+# no ef ChangeTracker involved — BitMemory is the source of truth
+
+# ── 6. cross-engine join (the challenge) ────────────────────────────
+# dapper result joins ef result without either owning the structure
+
+carry = do(**dapper) {
+  &sql("SELECT Id, ExternalRef FROM partner_api.orders")
+} into(retVal)
+
+do(**ef.change) {
+  *query("Order", Id in carry.ExternalRef)
+  &join(carry)
+} into(retVal)
+
+# retVal holds both sides; structure chosen downstream
+# the join is the open challenge — this is the operator's invitation

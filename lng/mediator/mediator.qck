@@ -1,0 +1,111 @@
+# mediator.qck — the middleware
+# sits between every engine and every consumer
+# no engine talks to another engine; they all talk to the mediator
+# no consumer knows which engine answered; they read the signal
+
+# ── the mediator is a chain stage ───────────────────────────────────
+# it receives signals from any **, routes them, transforms nothing
+
+mediator {
+  receives :: retVal | Struct | BitMemory | BitMatrix
+  emits    :: retVal | Struct | BitMemory | BitMatrix
+  owns     :: nothing
+  mutates  :: nothing
+}
+
+# ── routing ─────────────────────────────────────────────────────────
+# the mediator sees the signal; it does not interpret it
+
+route(signal) {
+  source  :: signal.origin        # which ** produced it
+  target  :: signal.into          # what the consumer asked for
+  pass    :: signal               # the mediator is transparent
+}
+
+# every operator phase passes through the mediator:
+#   ** engine → *operation → &close → mediator → into(consumer)
+
+# ── middleware hooks ────────────────────────────────────────────────
+# inject behavior without touching engine or consumer
+
+*middleware.auth {
+  before :: validate(signal.origin, signal.target)
+  reject :: signal.drop("unauthorized")
+}
+
+*middleware.log {
+  tap :: signal
+  emit :: trace(signal.origin, signal.op, signal.timestamp)
+}
+
+*middleware.cache {
+  before :: check(signal.hash)
+  hit    :: return(cached)
+  miss   :: pass(signal)
+  after  :: store(signal.hash, retVal)
+}
+
+*middleware.transform {
+  when :: signal.into != signal.shape
+  do   :: reshape(signal, signal.into)
+}
+
+*middleware.retry {
+  on    :: signal.flags & ERR
+  max   :: 3
+  delay :: exponential
+}
+
+# ── composition ─────────────────────────────────────────────────────
+# middleware stacks like chain stages — order matters
+
+mediator.use {
+  *middleware.auth
+  *middleware.log
+  *middleware.cache
+  *middleware.transform
+  *middleware.retry
+}
+
+# ── cross-engine: the mediator is why it works ──────────────────────
+# engine A emits retVal → mediator holds it → engine B reads it
+# neither A nor B imports the other; the mediator is the only import
+
+carry = do(**dapper) {
+  &sql("SELECT Id, Ref FROM external.orders")
+} into(retVal)
+# mediator receives retVal from **dapper
+
+do(**ef.change) {
+  *query("Order", Id in carry.Ref)
+  &join(carry)
+} into(retVal)
+# mediator receives the join request
+# mediator holds both signals — it brokers the join
+# neither dapper nor ef knows the other exists
+
+# ── multi-engine pipeline ──────────────────────────────────────────
+# the mediator chains engines the way chain chains stages
+
+do(**dapper) {
+  &sql("SELECT * FROM raw_events WHERE ts > @t", t: yesterday)
+} into(retVal)
+|> do(**ef.source) {
+  context(*retVal.user_id)
+  time(*retVal.ts)
+  &replay
+} into(BitMemory @ boundary)
+|> do(**bulk) {
+  *filter(Status == 0)
+  *set("Status", 1)
+  &flush(batch_size: 1000)
+} into(BitMatrix)
+
+# dapper → mediator → ef.source → mediator → bulk → mediator → done
+# each arrow is a signal handoff; the mediator is every arrow
+
+# ── the rule ────────────────────────────────────────────────────────
+# the mediator never becomes an engine
+# the mediator never becomes a consumer
+# the mediator never owns the structure
+# the mediator is the signal between them
