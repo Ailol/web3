@@ -1,87 +1,219 @@
-# qck.nit
 
-> resolve the web into depth or scan and create bitmemory of your colors and preferences so that each page evolves over time.
+# WEB3.qck
 
-`qck.nit` starts with the smallest useful physics: bounding boxes + relations.
-It does not need to know React, Angular, Figma, or what a "button" means before it can orient the page.
+> **ALL STAYS AS IS — SO THAT YOU GET TO KEEP YOUR PREFERENCES. IT JUST UPGRADES IT.**
 
-```text
-Chromium
-   ↓ x,y,w,h,z,parent
-qck.nit
+`WEB3.qck` is a portable spatial-computation layer for the web and development space.
+
+It does **not** ask languages, frameworks, browsers, APIs, IDEs, databases, or operating systems to move first.
+
+C stays C. Java stays Java. .NET stays .NET. JavaScript stays JavaScript. Existing REST APIs stay REST APIs. Existing tools remain usable.
+
+The upgrade is a shared layer of **rasterized space, bitmaps, vectors, depth, portable execution, persistent datasets, and AI exploration**.
+
+```
+existing web / apps / tools / APIs
+              │
+              │ pollen / observe / project
+              ▼
+        rasterized space
+              │
+      ┌───────┼────────┐
+      ▼       ▼        ▼
+   bitmap   vector    depth
+      │       │        │
+      └───────┼────────┘
+              ▼
+        portable state
+              │
+      C / WASM / native
+              │
+              ▼
+      human + AI explore
+```
+
+## The rule
+
+**No giant migration. No required rewrite. No company has to move first.**
+
+A system can be upgraded incrementally:
+
+```
+0% rewrite
++ one probe
++ one projection
++ one dataset
++ one portable runtime
+```
+
+Everything else can remain exactly where it already works.
+
+## Core primitives
+
+### Bitmap
+
+What exists, changed, matters, is occupied, is visible, is selected, or is allowed.
+
+```
+changed
+failed
+blocked
+requested
+uncertain
+relevant
+```
+
+Bitmaps make state composable and cheap to query.
+
+### Rasterization
+
+Screens, pages, dashboards, terminals, traces, cameras, and other visual surfaces can become spatial information instead of requiring direct injection into every system.
+
+```
+frame
+  ↓
+regions / boxes / depth
+  ↓
+attention bitmap
+  ↓
+*explore
+```
+
+### Vector
+
+Bitmaps say **what/where**. Vectors say **how to move through it**.
+
+```
+bitmap = occupancy / salience
+vector = direction / movement
+ depth = structure
+```
+
+Together they give AI and humans a learnable spatial representation.
+
+### Depth
+
+A flat surface can be projected into structural depth without replacing the original application.
+
+```
+rendered surface
+      ↓
+component
+      ↓
+parent
+      ↓
+source / state / events / network
+```
+
+### Portable execution
+
+WebAssembly provides a browser-side execution seam; C/native code provides the host-side seam.
+
+```
+browser  ↔ WASM
+native   ↔ C
+state    ↔ bitmap / dataset
+```
+
+The public model should stay small enough to travel between environments.
+
+## AI exploration
+
+The goal is not merely to make AI "look" at software.
+
+The goal is to give AI a **space to explore**.
+
+```
+./  = locality / start here
+*   = explore / keep the path live
+&   = resolved address
+```
+
+A visual or runtime change can seed exploration:
+
+```
+attention
    ↓
-box IDs + hit bitmap + depth
+*object
    ↓
-std10 / BitMemory later
+*relations
+*depth
+*state
+*history
+   ↓
+&resolved context
 ```
 
-## v0
+This allows AI to stay oriented without every tool requiring a bespoke direct integration first.
 
-Each visible thing can be represented as:
+## qck.dev + qck.nit
 
-```c
-typedef struct {
-    uint64_t id;
-    float x, y, w, h, z;
-    uint64_t parent;
-    uint64_t flags;
-} nit_box_t;
+`qck.dev` is the remembered computational development world.
+
+`qck.nit` resolves visual surfaces into depth and gives the space a geometry that humans and AI can explore.
+
+```
+qck.dev
+   │
+   ├─ state
+   ├─ data
+   ├─ units
+   ├─ attention
+   └─ projections
+         │
+         └─ qck.nit
+              ↓
+       raster / bitmap / vector / depth
 ```
 
-The bounding box says **where** the thing is. Parent/z relations give the first structural **depth**. More pollen can attach to the same stable ID later: DOM, source, events, network, design, runtime state.
+The projection may be windowed, borderless, or fullscreen while the host operating system continues providing drivers, scheduling, GPU, input, and filesystem services.
 
-The first bitmap bridge is `nit_hit_bitmap()`: bit `i` means `boxes[i]` contains the queried point. `nit_hit()` resolves the top-most visible/enabled object.
+## Compatibility first
 
-## Chrome test extension
+WEB3.qck is not a replacement requirement.
 
-A zero-flag Chrome extension lives in `qck.nit/chrome/`.
-
-1. Open `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Choose **Load unpacked**.
-4. Select the `qck.nit/chrome` folder.
-5. Open any normal webpage and click the **qck.nit** extension icon.
-6. Move the pointer around the page to see the current element plus its visible parent depth.
-7. Press the in-page **`nit' 3D`** button to project the current local component chain into depth.
-8. In 3D: drag to rotate, use the wheel to move the scene in/out, press **`nit' 2D`** or **Escape** to return.
-9. **Alt+click** in 2D to lock/unlock the current depth view.
-10. Open DevTools Console to see the selected box, stable runtime ID, hit IDs, bitmap and depth planes.
-
-No Chrome launch flags or remote-debugging mode are required.
-
-The actual webpage is never transformed for 3D. `qck.nit` copies the live Chromium bounding boxes into an overlay scene, removes huge viewport-sized root wrappers, keeps the nearest meaningful component ancestry (up to seven planes), and separates those copies along Z. Returning to 2D simply removes the depth scene.
-
-The Chrome adapter currently runs the same geometry idea in JavaScript so it is immediately testable. The C core remains the native contract; WASM/native BitMemory pollen can replace the geometry path later without changing the depth model.
-
-## test
-
-GCC/Clang:
-
-```sh
-cc -std=c11 -O2 -Wall -Wextra -pedantic nit.c test_nit.c -o test_nit
-./test_nit
+```
+C          ✓
+C++        ✓
+Java       ✓
+.NET       ✓
+JavaScript ✓
+TypeScript ✓
+Python     ✓
+Rust       ✓
+REST       ✓
+SQL        ✓
+Mongo      ✓
+Redis      ✓
+Browsers   ✓
+IDEs       ✓
 ```
 
-MSVC:
+Adapters and projections should attach to what already exists rather than forcing an ecosystem rewrite.
 
-```bat
-cl /O2 /W4 nit.c test_nit.c
-test_nit.exe
+## First build target
+
+Keep the first implementation tiny:
+
+```
+1. raster / geometry input
+2. stable object IDs
+3. bitmap planes
+4. vector movement
+5. depth projection
+6. attention
+7. C + WASM execution seam
+8. persistent portable dataset
 ```
 
-Expected:
+Then optimize the hot path with packed structs, delta updates, GPU instancing, SIMD, and BitMemory where profiling shows it matters.
 
-```text
-qck.nit: 12/12 passed
-```
+---
 
-## next
+## WEB3.qck
 
-- stable DOM/source IDs attached to the same box IDs
-- BitMemory-backed property/relation planes
-- C core compiled to WASM for the browser test path
-- optional native BitMemory runner
-- optional SIMD/ASM hit-mask kernel after profiling
-- depth-space visual surface in `qck.web`
+**The web does not have to be replaced to become spatial, portable, and AI-explorable.**
 
-Keep the public model C-simple. Assembly is an implementation accelerator, not the meaning of `qck.nit`.
+Everything stays as is.
+
+It just upgrades it.

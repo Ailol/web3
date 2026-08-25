@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "qck.nit",
+  "version": "0.2.0",
+  "description": "Resolve the web into depth using live Chromium bounding boxes.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Toggle qck.nit"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  }
+}
